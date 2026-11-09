@@ -3,7 +3,7 @@
 # Braucht das .NET 10 SDK - nur auf dem Rechner, der baut, nicht auf dem Jellyfin-Server.
 set -e
 cd "$(dirname "$0")"
-OUT="dist/CustomBranding_1.0.0.0"
+OUT="dist/CustomBranding_1.0.1.0"
 
 dotnet publish -c Release -o "$OUT"
 

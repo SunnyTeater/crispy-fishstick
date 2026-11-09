@@ -57,6 +57,9 @@ public sealed class BrandingService
     private static readonly byte[] _pngMagic = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
     private static readonly byte[] _icoMagic = { 0x00, 0x00, 0x01, 0x00 };
 
+    // Markiert in state.json eine Datei, deren Ueberschreiben begonnen, aber nicht bestaetigt wurde.
+    private const string PendingPrefix = "pending:";
+
     // Der Webclient wird mit Hash im Dateinamen gebaut (z. B. banner-light.1a2b3c.png),
     // deshalb wird ueber Muster gesucht statt ueber feste Namen.
     private static readonly Dictionary<BrandingSlot, Target[]> _targets = new()
@@ -221,13 +224,21 @@ public sealed class BrandingService
             }
 
             // Stammt die Datei nicht von uns, ist sie ein Original (z. B. nach einem Update) und wird gesichert.
-            var isOurs = state.TryGetValue(relativePath, out var lastWritten) && lastWritten == currentHash;
+            // Eine als "pending" markierte Datei ist ein abgebrochener Schreibversuch von uns: sie darf
+            // die Sicherung des Originals nicht ueberschreiben.
+            var isOurs = state.TryGetValue(relativePath, out var lastWritten)
+                && (lastWritten == currentHash || IsPending(lastWritten));
             if (!isOurs)
             {
                 var backupPath = Path.Combine(_backupDir, relativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
                 File.Copy(fullPath, backupPath, true);
             }
+
+            // Vor dem Schreiben vermerken, dass diese Datei gleich von uns stammt. Bricht der Server
+            // mitten im Schreiben ab, bleibt der Vermerk stehen und die Sicherung beim naechsten Start erhalten.
+            state[relativePath] = PendingPrefix + contentHash;
+            SaveState(state);
 
             File.WriteAllBytes(fullPath, content);
             state[relativePath] = contentHash;
@@ -258,7 +269,9 @@ public sealed class BrandingService
             {
                 // Nur zurueckspielen, wenn dort noch unser Bild liegt. Nach einem Jellyfin-Update
                 // liegt bereits ein neues Original vor, das nicht durch ein altes ersetzt werden darf.
-                if (File.Exists(fullPath) && Hash(File.ReadAllBytes(fullPath)) == state[relativePath])
+                if (File.Exists(fullPath)
+                    && !IsLink(fullPath)
+                    && (IsPending(state[relativePath]) || Hash(File.ReadAllBytes(fullPath)) == state[relativePath]))
                 {
                     File.Copy(backupPath, fullPath, true);
                 }
@@ -289,6 +302,13 @@ public sealed class BrandingService
 
             foreach (var file in Directory.EnumerateFiles(dir, target.Pattern, SearchOption.TopDirectoryOnly).Order(StringComparer.Ordinal))
             {
+                // Symlinks nicht anfassen: sonst wuerde das Ziel des Links ueberschrieben,
+                // das ausserhalb des Web-Ordners liegen kann.
+                if (IsLink(file))
+                {
+                    continue;
+                }
+
                 var name = Path.GetFileName(file);
                 var relativePath = target.SubDir.Length == 0 ? name : target.SubDir + "/" + name;
                 result.Add((file, relativePath, target.IsIco));
@@ -383,6 +403,10 @@ public sealed class BrandingService
         => data.Length > magic.Length && data.AsSpan(0, magic.Length).SequenceEqual(magic);
 
     private static string Hash(byte[] data) => Convert.ToHexString(SHA256.HashData(data));
+
+    private static bool IsPending(string stateValue) => stateValue.StartsWith(PendingPrefix, StringComparison.Ordinal);
+
+    private static bool IsLink(string path) => new FileInfo(path).LinkTarget is not null;
 
     /// <summary>
     /// Packt ein PNG unveraendert in einen ICO-Container (ICO darf PNG-Daten enthalten).
