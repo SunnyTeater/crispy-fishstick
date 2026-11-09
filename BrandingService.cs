@@ -153,7 +153,25 @@ public sealed class BrandingService
             Directory.CreateDirectory(_customDir);
             File.WriteAllBytes(Path.Combine(_customDir, slot + (isIco ? ".ico" : ".png")), data);
 
-            Apply(slot);
+            try
+            {
+                Apply(slot);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                // Nichts halb Eingespieltes zuruecklassen: sonst gaelte das Bild als ersetzt, obwohl es das nicht ist.
+                try
+                {
+                    Restore(slot);
+                }
+                catch (Exception restoreEx) when (restoreEx is UnauthorizedAccessException or IOException)
+                {
+                    _logger.LogWarning(restoreEx, "Custom Branding: Originale konnten nach fehlgeschlagenem Upload nicht zurueckgespielt werden");
+                }
+
+                DeleteCustomFiles(slot);
+                throw;
+            }
         }
     }
 
@@ -237,10 +255,30 @@ public sealed class BrandingService
 
             // Vor dem Schreiben vermerken, dass diese Datei gleich von uns stammt. Bricht der Server
             // mitten im Schreiben ab, bleibt der Vermerk stehen und die Sicherung beim naechsten Start erhalten.
+            state.TryGetValue(relativePath, out var previousState);
             state[relativePath] = PendingPrefix + contentHash;
             SaveState(state);
 
-            File.WriteAllBytes(fullPath, content);
+            try
+            {
+                File.WriteAllBytes(fullPath, content);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Fehlende Schreibrechte: die Datei wurde gar nicht angefasst, der Vermerk waere falsch.
+                if (previousState is null)
+                {
+                    state.Remove(relativePath);
+                }
+                else
+                {
+                    state[relativePath] = previousState;
+                }
+
+                SaveState(state);
+                throw;
+            }
+
             state[relativePath] = contentHash;
             written++;
             _logger.LogDebug("Custom Branding: {File} ersetzt", relativePath);
@@ -269,11 +307,16 @@ public sealed class BrandingService
             {
                 // Nur zurueckspielen, wenn dort noch unser Bild liegt. Nach einem Jellyfin-Update
                 // liegt bereits ein neues Original vor, das nicht durch ein altes ersetzt werden darf.
-                if (File.Exists(fullPath)
-                    && !IsLink(fullPath)
-                    && (IsPending(state[relativePath]) || Hash(File.ReadAllBytes(fullPath)) == state[relativePath]))
+                if (File.Exists(fullPath) && !IsLink(fullPath))
                 {
-                    File.Copy(backupPath, fullPath, true);
+                    var currentHash = Hash(File.ReadAllBytes(fullPath));
+                    var isOurs = IsPending(state[relativePath]) || currentHash == state[relativePath];
+
+                    // Liegt dort bereits das Original, gibt es nichts zurueckzuschreiben.
+                    if (isOurs && currentHash != Hash(File.ReadAllBytes(backupPath)))
+                    {
+                        File.Copy(backupPath, fullPath, true);
+                    }
                 }
 
                 File.Delete(backupPath);
