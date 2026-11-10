@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <title>Custom Branding</title>
+</head>
+<body>
+    <div id="CustomBrandingPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-button">
+        <div data-role="content">
+            <div class="content-primary">
+                <style>
+                    .cbSlot { margin: 0 0 2em; padding: 1em; border: 1px solid rgba(128, 128, 128, .35); border-radius: .4em; }
+                    .cbSlot h3 { margin: 0 0 .3em; }
+                    .cbPreview { display: flex; align-items: center; justify-content: center; height: 7em; margin: 1em 0; padding: .8em; border-radius: .3em; }
+                    .cbPreview img { max-width: 100%; max-height: 100%; }
+                    .cbPreview.cbOnDark { background: #101010; }
+                    .cbPreview.cbOnLight { background: #f2f2f2; }
+                    .cbActions { display: flex; flex-wrap: wrap; align-items: center; gap: .8em; }
+                    .cbFiles { margin-top: .8em; font-size: .85em; opacity: .7; word-break: break-all; }
+                    .cbWarning { margin: 0 0 2em; padding: 1em; border-radius: .4em; background: rgba(204, 51, 51, .2); border: 1px solid #c33; }
+                    .cbWarning code { word-break: break-all; }
+                </style>
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Custom Branding</h2>
+                    <div class="fieldDescription" style="margin-bottom: 2em;">
+                        Hochgeladene Bilder überschreiben die Originaldateien im Web-Ordner. Die Originale werden gesichert
+                        und lassen sich über „Original wiederherstellen“ zurückholen. Nach einem Jellyfin-Update werden die
+                        eigenen Bilder beim Serverstart automatisch neu eingespielt.<br>
+                        Der Browser hält die alten Bilder im Cache – nach dem Hochladen mit Strg+F5 neu laden.
+                    </div>
+                </div>
+
+                <div id="cbWarning" class="cbWarning" style="display: none;"></div>
+                <div id="cbSlots"></div>
+            </div>
+        </div>
+
+        <script type="text/javascript">
+            (function () {
+                var slots = [
+                    {
+                        id: 'BannerLight',
+                        title: 'Logo für dunkle Themes',
+                        hint: 'Helles Logo mit transparentem Hintergrund (banner-light). Kopfzeile, Anmeldeseite, Ladebildschirm. PNG, Original 1302 × 378 px.',
+                        accept: 'image/png',
+                        preview: 'cbOnDark'
+                    },
+                    {
+                        id: 'BannerDark',
+                        title: 'Logo für helle Themes',
+                        hint: 'Dunkles Logo mit transparentem Hintergrund (banner-dark). PNG, Original 1302 × 378 px.',
+                        accept: 'image/png',
+                        preview: 'cbOnLight'
+                    },
+                    {
+                        id: 'Icon',
+                        title: 'Icon',
+                        hint: 'Quadratisches Icon (icon-transparent). Seitenmenü, Ladebildschirm auf kleinen Displays, TV-Layout. PNG, Original 536 × 536 px.',
+                        accept: 'image/png',
+                        preview: 'cbOnDark'
+                    },
+                    {
+                        id: 'Favicon',
+                        title: 'Favicon',
+                        hint: 'Quadratisches PNG (empfohlen 256 × 256 px) ersetzt favicon.ico und alle Touch-Icons. Eine ICO-Datei ersetzt nur favicon.ico.',
+                        accept: 'image/png,image/x-icon,image/vnd.microsoft.icon,.ico',
+                        preview: 'cbOnDark'
+                    }
+                ];
+
+                var page = document.querySelector('#CustomBrandingPage');
+                var container = page.querySelector('#cbSlots');
+                var warning = page.querySelector('#cbWarning');
+
+                function request(method, path, body) {
+                    return fetch(ApiClient.getUrl('CustomBranding/' + path), {
+                        method: method,
+                        headers: {
+                            'Authorization': 'MediaBrowser Token="' + ApiClient.accessToken() + '"',
+                            'Content-Type': body ? 'application/octet-stream' : 'application/json'
+                        },
+                        body: body
+                    }).then(function (response) {
+                        return response.json().catch(function () {
+                            return {};
+                        }).then(function (data) {
+                            if (!response.ok) {
+                                throw new Error(data.Message || data.title || ('HTTP ' + response.status));
+                            }
+                            return data;
+                        });
+                    });
+                }
+
+                function showError(error) {
+                    Dashboard.hideLoadingMsg();
+                    Dashboard.alert({ title: 'Custom Branding', message: error.message });
+                }
+
+                function render(status) {
+                    if (status.Writable) {
+                        warning.style.display = 'none';
+                    } else {
+                        warning.style.display = '';
+                        warning.innerHTML = 'Der Jellyfin-Dienst hat keine Schreibrechte im Web-Ordner, das Ersetzen wird fehlschlagen.'
+                            + '<br>Web-Ordner: <code></code>';
+                        warning.querySelector('code').textContent = status.WebPath;
+                    }
+
+                    container.innerHTML = '';
+                    slots.forEach(function (slot) {
+                        var state = status.Slots.filter(function (s) {
+                            return s.Slot === slot.id;
+                        })[0] || { HasCustom: false, Files: [] };
+
+                        var element = document.createElement('div');
+                        element.className = 'cbSlot';
+                        element.innerHTML = '<h3></h3><div class="fieldDescription"></div>'
+                            + '<div class="cbPreview ' + slot.preview + '"></div>'
+                            + '<div class="cbActions">'
+                            + '<input type="file" accept="' + slot.accept + '">'
+                            + '<button is="emby-button" type="button" class="raised button-submit emby-button cbUpload"><span>Hochladen und ersetzen</span></button>'
+                            + '<button is="emby-button" type="button" class="raised emby-button cbReset"><span>Original wiederherstellen</span></button>'
+                            + '</div><div class="cbFiles"></div>';
+
+                        element.querySelector('h3').textContent = slot.title + (state.HasCustom ? ' – ersetzt' : ' – Original');
+                        element.querySelector('.fieldDescription').textContent = slot.hint;
+                        element.querySelector('.cbFiles').textContent = state.Files.length
+                            ? 'Betroffene Dateien: ' + state.Files.join(', ')
+                            : 'Keine passende Datei im Web-Ordner gefunden.';
+
+                        // Vorschau zeigt die Datei, die der Server tatsaechlich ausliefert.
+                        if (state.Files.length) {
+                            var image = document.createElement('img');
+                            image.alt = slot.title;
+                            image.src = ApiClient.getUrl('web/' + state.Files[0]) + '?cb=' + Date.now();
+                            element.querySelector('.cbPreview').appendChild(image);
+                        }
+
+                        var input = element.querySelector('input[type=file]');
+                        var reset = element.querySelector('.cbReset');
+                        reset.disabled = !state.HasCustom;
+
+                        element.querySelector('.cbUpload').addEventListener('click', function () {
+                            var file = input.files[0];
+                            if (!file) {
+                                Dashboard.alert({ title: 'Custom Branding', message: 'Bitte zuerst eine Datei auswählen.' });
+                                return;
+                            }
+
+                            Dashboard.showLoadingMsg();
+                            request('POST', 'Image/' + slot.id, file).then(function (result) {
+                                Dashboard.hideLoadingMsg();
+                                render(result);
+                            }).catch(showError);
+                        });
+
+                        reset.addEventListener('click', function () {
+                            Dashboard.showLoadingMsg();
+                            request('DELETE', 'Image/' + slot.id).then(function (result) {
+                                Dashboard.hideLoadingMsg();
+                                render(result);
+                            }).catch(showError);
+                        });
+
+                        container.appendChild(element);
+                    });
+                }
+
+                page.addEventListener('pageshow', function () {
+                    Dashboard.showLoadingMsg();
+                    request('GET', 'Status').then(function (status) {
+                        Dashboard.hideLoadingMsg();
+                        render(status);
+                    }).catch(showError);
+                });
+            })();
+        </script>
+    </div>
+</body>
+</html>
